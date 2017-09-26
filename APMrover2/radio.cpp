@@ -8,11 +8,13 @@ void Rover::set_control_channels(void)
     // check change on RCMAP
     channel_steer    = RC_Channels::rc_channel(rcmap.roll()-1);
     channel_throttle = RC_Channels::rc_channel(rcmap.throttle()-1);
-    channel_aux      = RC_Channels::rc_channel(g.aux_channel-1);
+    channel_learn    = RC_Channels::rc_channel(g.learn_channel-1);
+    channel_skip_wp  = RC_Channels::rc_channel(g.channel_skip_wp-1); //INDRO WP SKIPPING
 
     // set rc channel ranges
     channel_steer->set_angle(SERVO_MAX);
     channel_throttle->set_angle(100);
+    channel_skip_wp->set_range(1500);
 
     // Allow to reconfigure ouput when not armed
     if (!arming.is_armed()) {
@@ -53,7 +55,7 @@ void Rover::rudder_arm_disarm_check()
     }
 
     // if not in a manual throttle mode then disallow rudder arming/disarming
-    if (control_mode->auto_throttle()) {
+    if (auto_throttle_mode) {
         rudder_arm_timer = 0;
         return;
     }
@@ -129,7 +131,7 @@ void Rover::read_radio()
         const float left_input = channel_steer->norm_input();
         const float right_input = channel_throttle->norm_input();
         const float throttle_scaled = 0.5f * (left_input + right_input);
-        float steering_scaled = constrain_float(left_input - right_input, -1.0f, 1.0f);
+        float steering_scaled = constrain_float(left_input - right_input,-1.0f,1.0f);
 
         // flip the steering direction if requesting the vehicle reverse (to be consistent with separate steering-throttle frames)
         if (is_negative(throttle_scaled)) {
@@ -152,6 +154,21 @@ void Rover::read_radio()
         channel_throttle->set_pwm(thr);
     }
 
+    // copy RC scaled inputs to outputs
+    g2.motors.set_throttle(channel_throttle->get_control_in());
+    g2.motors.set_steering(channel_steer->get_control_in());
+
+    // Check if the throttle value is above 50% and we need to nudge
+    // Make sure its above 50% in the direction we are travelling
+    if ((fabsf(g2.motors.get_throttle()) > 50.0f) &&
+        ((is_negative(g2.motors.get_throttle()) && in_reverse) ||
+         (is_positive(g2.motors.get_throttle()) && !in_reverse))) {
+        throttle_nudge = (g.throttle_max - g.throttle_cruise) *
+                         ((fabsf(channel_throttle->norm_input()) - 0.5f) / 0.5f);
+    } else {
+        throttle_nudge = 0;
+    }
+    current_skipper_val = (int)channel_skip_wp->get_control_in();
     // check if we try to do RC arm/disarm
     rudder_arm_disarm_check();
 }
@@ -175,6 +192,25 @@ void Rover::control_failsafe(uint16_t pwm)
     }
 }
 
+/*
+  return true if throttle level is below throttle failsafe threshold
+  or RC input is invalid
+ */
+bool Rover::throttle_failsafe_active(void)
+{
+    if (!g.fs_throttle_enabled) {
+        return false;
+    }
+    if (millis() - failsafe.last_valid_rc_ms > 1000) {
+        // we haven't had a valid RC frame for 1 seconds
+        return true;
+    }
+    if (channel_throttle->get_reverse()) {
+        return channel_throttle->get_radio_in() >= g.fs_throttle_value;
+    }
+    return channel_throttle->get_radio_in() <= g.fs_throttle_value;
+}
+
 void Rover::trim_control_surfaces()
 {
     read_radio();
@@ -189,7 +225,7 @@ void Rover::trim_control_surfaces()
 
 void Rover::trim_radio()
 {
-    for (uint8_t y = 0; y < 30; y++) {
+    for (int y = 0; y < 30; y++) {
         read_radio();
     }
     trim_control_surfaces();

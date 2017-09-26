@@ -13,7 +13,7 @@ void Rover::crash_check()
   static uint16_t crash_counter;  // number of iterations vehicle may have been crashed
 
   // return immediately if disarmed, or crash checking disabled or in HOLD mode
-  if (!arming.is_armed() || g.fs_crash_check == FS_CRASH_DISABLE || (!control_mode->is_autopilot_mode())) {
+  if (!arming.is_armed() || g.fs_crash_check == FS_CRASH_DISABLE || (control_mode != GUIDED && control_mode != AUTO)) {
     crash_counter = 0;
     return;
   }
@@ -38,7 +38,7 @@ void Rover::crash_check()
     // send message to gcs
     gcs().send_text(MAV_SEVERITY_EMERGENCY, "Crash: Going to HOLD");
     // change mode to hold and disarm
-    set_mode(mode_hold, MODE_REASON_CRASH_FAILSAFE);
+    set_mode(HOLD);
     if (g.fs_crash_check == FS_CRASH_HOLD_AND_DISARM) {
       disarm_motors();
     }

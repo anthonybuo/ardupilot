@@ -3,6 +3,9 @@
 // Internal defines, don't edit and expect things to work
 // -------------------------------------------------------
 
+#define TRUE  1
+#define FALSE 0
+
 // Just so that it's completely clear...
 #define ENABLED  1
 #define DISABLED 0
@@ -11,13 +14,13 @@
 #define ENABLE ENABLED
 #define DISABLE DISABLED
 
+#define DEBUG 0
 #define SERVO_MAX 4500  // This value represents 45 degrees and is just an arbitrary representation of servo max travel.
 
 // CH 7 control
 enum ch7_option {
-    CH7_DO_NOTHING      = 0,
-    CH7_SAVE_WP         = 1,
-    CH7_LEARN_CRUISE    = 2
+    CH7_DO_NOTHING = 0,
+    CH7_SAVE_WP    = 1
 };
 
 // HIL enumerations
@@ -28,12 +31,19 @@ enum ch7_option {
 // ----------------
 enum mode {
     MANUAL       = 0,
+    LEARNING     = 2,
     STEERING     = 3,
     HOLD         = 4,
     AUTO         = 10,
     RTL          = 11,
     GUIDED       = 15,
     INITIALISING = 16
+};
+
+enum GuidedMode {
+    Guided_WP,
+    Guided_Angle,
+    Guided_Velocity
 };
 
 // types of failsafe events
@@ -55,6 +65,7 @@ enum mode {
 
 #define TYPE_AIRSTART_MSG       0x00
 #define TYPE_GROUNDSTART_MSG    0x01
+#define MAX_NUM_LOGS            100
 
 #define MASK_LOG_ATTITUDE_FAST  (1<<0)
 #define MASK_LOG_ATTITUDE_MED   (1<<1)
@@ -90,9 +101,7 @@ enum mode {
 #define MAVLINK_SET_ATT_TYPE_MASK_ATTITUDE_IGNORE      (1<<7)
 
 // Error message sub systems and error codes
-#define ERROR_SUBSYSTEM_FAILSAFE_FENCE  9
-#define ERROR_SUBSYSTEM_FLIGHT_MODE     10
-#define ERROR_SUBSYSTEM_CRASH_CHECK     12
+#define ERROR_SUBSYSTEM_CRASH_CHECK  12
 // subsystem specific error codes -- crash checker
 #define ERROR_CODE_CRASH_CHECK_CRASH 1
 
@@ -103,23 +112,3 @@ enum fs_crash_action {
 };
 
 #define DISTANCE_HOME_MAX 0.5f  // Distance max to home location before changing it when disarm
-
-enum mode_reason_t {
-    MODE_REASON_INITIALISED = 0,
-    MODE_REASON_TX_COMMAND,
-    MODE_REASON_GCS_COMMAND,
-    MODE_REASON_FAILSAFE,
-    MODE_REASON_MISSION_END,
-    MODE_REASON_CRASH_FAILSAFE,
-    MODE_REASON_MISSION_COMMAND
-};
-
-// values used by the ap.ch7_opt and ap.ch8_opt flags
-enum aux_switch_pos {
-    AUX_SWITCH_LOW,
-    AUX_SWITCH_MIDDLE,
-    AUX_SWITCH_HIGH
-};
-
-#define AUX_SWITCH_PWM_TRIGGER_HIGH 1800   // pwm value above which the ch7 or ch8 option will be invoked
-#define AUX_SWITCH_PWM_TRIGGER_LOW  1200   // pwm value below which the ch7 or ch8 option will be disabled
