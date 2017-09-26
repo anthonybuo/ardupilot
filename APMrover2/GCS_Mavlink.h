@@ -19,16 +19,9 @@ protected:
     Compass *get_compass() const override;
     AP_Mission *get_mission() override;
     AP_Rally *get_rally() const override { return nullptr; };
-    AP_Camera *get_camera() const override;
     AP_ServoRelayEvents *get_servorelayevents() const override;
-    AP_GPS *get_gps() const override;
-    AP_AdvancedFailsafe *get_advanced_failsafe() const override;
-    const AP_FWVersion &get_fwver() const override;
-    void set_ekf_origin(const Location& loc) override;
 
     uint8_t sysid_my_gcs() const override;
-
-    bool set_mode(uint8_t mode) override;
 
 private:
 

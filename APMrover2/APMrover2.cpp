@@ -46,6 +46,7 @@ const AP_Scheduler::Task Rover::scheduler_tasks[] = {
     //         Function name,          Hz,     us,
     SCHED_TASK(read_radio,             50,   1000),
     SCHED_TASK(ahrs_update,            50,   6400),
+    SCHED_TASK(turn_prediction,        50,   1000),
     SCHED_TASK(read_rangefinders,      50,   2000),
     SCHED_TASK(update_current_mode,    50,   1500),
     SCHED_TASK(set_servos,             50,   1500),
@@ -54,16 +55,17 @@ const AP_Scheduler::Task Rover::scheduler_tasks[] = {
     SCHED_TASK(update_alt,             10,   3400),
     SCHED_TASK(update_beacon,          50,     50),
     SCHED_TASK(update_visual_odom,     50,     50),
-    SCHED_TASK(update_wheel_encoder,   20,     50),
+    SCHED_TASK(update_wheel_encoder,   50,     50),
+    SCHED_TASK(navigate,               10,   1600),
     SCHED_TASK(update_compass,         10,   2000),
-    SCHED_TASK(update_mission,         10,   1000),
+    SCHED_TASK(update_commands,        10,   1000),
     SCHED_TASK(update_logging1,        10,   1000),
     SCHED_TASK(update_logging2,        10,   1000),
     SCHED_TASK(gcs_retry_deferred,     50,   1000),
     SCHED_TASK(gcs_update,             50,   1700),
     SCHED_TASK(gcs_data_stream_send,   50,   3000),
     SCHED_TASK(read_control_switch,     7,   1000),
-    SCHED_TASK(read_aux_switch,        10,    100),
+    SCHED_TASK(read_trim_switch,       10,   1000),
     SCHED_TASK(read_battery,           10,   1000),
     SCHED_TASK(read_receiver_rssi,     10,   1000),
     SCHED_TASK(update_events,          50,   1000),
@@ -80,11 +82,21 @@ const AP_Scheduler::Task Rover::scheduler_tasks[] = {
     SCHED_TASK(button_update,           5,    100),
     SCHED_TASK(stats_update,            1,    100),
     SCHED_TASK(crash_check,            10,   1000),
-    SCHED_TASK(cruise_learn_update,    50,     50),
 #if ADVANCED_FAILSAFE == ENABLED
     SCHED_TASK(afs_fs_check,           10,    100),
 #endif
 };
+
+/*
+	Indro Turn Prediction
+*/
+
+
+void Rover::turn_prediction()
+{
+    turning_right = get_is_turn_right();
+}
+
 
 /*
   update AP_Stats
@@ -100,8 +112,12 @@ void Rover::stats_update(void)
  */
 void Rover::setup()
 {
+    cliSerial = hal.console;
+
     // load the default values of variables listed in var_info[]
     AP_Param::setup_sketch_defaults();
+
+    in_auto_reverse = false;
 
     init_ardupilot();
 
@@ -176,8 +192,6 @@ void Rover::ahrs_update()
     Vector3f velocity;
     if (ahrs.get_velocity_NED(velocity)) {
         ground_speed = norm(velocity.x, velocity.y);
-    } else if (gps.status() >= AP_GPS::GPS_OK_FIX_3D) {
-        ground_speed = ahrs.groundspeed();
     }
 
     if (should_log(MASK_LOG_ATTITUDE_FAST)) {
@@ -205,7 +219,13 @@ void Rover::mount_update(void)
 void Rover::update_trigger(void)
 {
 #if CAMERA == ENABLED
-    camera.update_trigger();
+    camera.trigger_pic_cleanup();
+    if (camera.check_trigger_pin()) {
+        gcs().send_message(MSG_CAMERA_FEEDBACK);
+        if (should_log(MASK_LOG_CAMERA)) {
+            DataFlash.Log_Write_Camera(ahrs, gps, current_loc);
+        }
+    }
 #endif
 }
 
@@ -269,7 +289,7 @@ void Rover::update_logging1(void)
 void Rover::update_logging2(void)
 {
     if (should_log(MASK_LOG_STEERING)) {
-        if (!control_mode->manual_steering()) {
+        if (control_mode == STEERING || control_mode == AUTO || control_mode == RTL || control_mode == GUIDED) {
             Log_Write_Steering();
         }
     }
@@ -388,15 +408,183 @@ void Rover::update_GPS_10Hz(void)
 
         // set system time if necessary
         set_system_time_from_GPS();
+
+        if (gps.status() >= AP_GPS::GPS_OK_FIX_3D) {
+
+            // get ground speed estimate from AHRS
+            ground_speed = ahrs.groundspeed();
+
 #if CAMERA == ENABLED
-        camera.update();
+            if (camera.update_location(current_loc, rover.ahrs) == true) {
+                do_take_picture();
+            }
 #endif
+        }
     }
 }
 
 void Rover::update_current_mode(void)
 {
-    control_mode->update();
+    switch (control_mode) {
+    case AUTO:
+    case RTL:
+        if (!in_auto_reverse) {
+            set_reverse(false);
+        }
+        if (!do_auto_rotation) {
+            calc_lateral_acceleration();
+            calc_nav_steer();
+            calc_throttle(g.speed_cruise);
+        } else {
+            do_yaw_rotation();
+        }
+        break;
+
+    case GUIDED: {
+        if (!in_auto_reverse) {
+            set_reverse(false);
+        }
+        switch (guided_mode) {
+        case Guided_Angle:
+            nav_set_yaw_speed();
+            break;
+
+        case Guided_WP:
+            if (rtl_complete || verify_RTL()) {
+                // we have reached destination so stop where we are
+                if (fabsf(g2.motors.get_throttle()) > g.throttle_min.get()) {
+                    gcs().send_mission_item_reached_message(0);
+                }
+                g2.motors.set_throttle(g.throttle_min.get());
+                g2.motors.set_steering(0.0f);
+                lateral_acceleration = 0.0f;
+            } else {
+                calc_lateral_acceleration();
+                calc_nav_steer();
+                calc_throttle(rover.guided_control.target_speed);
+                Log_Write_GuidedTarget(guided_mode, Vector3f(next_WP.lat, next_WP.lng, next_WP.alt),
+                                       Vector3f(rover.guided_control.target_speed, g2.motors.get_throttle(), 0.0f));
+            }
+            break;
+
+        case Guided_Velocity:
+            nav_set_speed();
+            break;
+
+        default:
+            gcs().send_text(MAV_SEVERITY_WARNING, "Unknown GUIDED mode");
+            break;
+        }
+        break;
+    }
+
+    case STEERING: {
+        /*
+          in steering mode we control lateral acceleration
+          directly. We first calculate the maximum lateral
+          acceleration at full steering lock for this speed. That is
+          V^2/R where R is the radius of turn. We get the radius of
+          turn from half the STEER2SRV_P.
+         */
+        float max_g_force = ground_speed * ground_speed / steerController.get_turn_radius();
+
+        // constrain to user set TURN_MAX_G
+        max_g_force = constrain_float(max_g_force, 0.1f, g.turn_max_g * GRAVITY_MSS);
+
+        lateral_acceleration = max_g_force * (channel_steer->get_control_in()/4500.0f);
+        calc_nav_steer();
+
+        // and throttle gives speed in proportion to cruise speed, up
+        // to 50% throttle, then uses nudging above that.
+        float target_speed = channel_throttle->get_control_in() * 0.01f * 2 * g.speed_cruise;
+        set_reverse(target_speed < 0);
+        if (in_reverse) {
+            target_speed = constrain_float(target_speed, -g.speed_cruise, 0);
+        } else {
+            target_speed = constrain_float(target_speed, 0, g.speed_cruise);
+        }
+        calc_throttle(target_speed);
+        break;
+    }
+
+    case LEARNING:
+    case MANUAL:
+        // mark us as in_reverse when using a negative throttle to
+        // stop AHRS getting off
+        set_reverse(is_negative(g2.motors.get_throttle()));
+        break;
+
+    case HOLD:
+        // hold position - stop motors and center steering
+        g2.motors.set_throttle(0.0f);
+        g2.motors.set_steering(0.0f);
+        if (!in_auto_reverse) {
+            set_reverse(false);
+        }
+        break;
+
+    case INITIALISING:
+        break;
+    }
+}
+
+void Rover::update_navigation()
+{
+    switch (control_mode) {
+    case MANUAL:
+    case HOLD:
+    case LEARNING:
+    case STEERING:
+    case INITIALISING:
+        break;
+
+    case AUTO:
+        mission.update();
+        if (do_auto_rotation) {
+            do_yaw_rotation();
+        }
+        break;
+
+    case RTL:
+        // no loitering around the wp with the rover, goes direct to the wp position
+        if (verify_RTL()) {
+            g2.motors.set_throttle(g.throttle_min.get());
+            set_mode(HOLD);
+        } else {
+            calc_lateral_acceleration();
+            calc_nav_steer();
+        }
+        break;
+
+    case GUIDED:
+        switch (guided_mode) {
+        case Guided_Angle:
+            nav_set_yaw_speed();
+            break;
+
+        case Guided_WP:
+            // no loitering around the wp with the rover, goes direct to the wp position
+            if (rtl_complete || verify_RTL()) {
+                // we have reached destination so stop where we are
+                g2.motors.set_throttle(g.throttle_min.get());
+                g2.motors.set_steering(0.0f);
+                lateral_acceleration = 0.0f;
+            } else {
+                calc_lateral_acceleration();
+                calc_nav_steer();
+            }
+            break;
+
+        case Guided_Velocity:
+            nav_set_speed();
+            break;
+
+        default:
+            gcs().send_text(MAV_SEVERITY_WARNING, "Unknown GUIDED mode");
+            break;
+        }
+        break;
+    }
 }
 
 AP_HAL_MAIN_CALLBACKS(&rover);

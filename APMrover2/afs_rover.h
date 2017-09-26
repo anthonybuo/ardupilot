@@ -30,14 +30,14 @@ public:
     AP_AdvancedFailsafe_Rover(AP_Mission &_mission, AP_Baro &_baro, const AP_GPS &_gps, const RCMapper &_rcmap);
 
     // called to set all outputs to termination state
-    void terminate_vehicle(void) override;
+    void terminate_vehicle(void);
 
 protected:
-    // setup failsafe values - this is handled by motors library
-    void setup_IO_failsafe(void) override {}
+    // setup failsafe values for if FMU firmware stops running
+    void setup_IO_failsafe(void);
 
     // return the AFS mapped control mode
-    enum control_mode afs_mode(void) override;
+    enum control_mode afs_mode(void);
 };
 
 #endif  // ADVANCED_FAILSAFE
